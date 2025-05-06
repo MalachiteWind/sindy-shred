@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import DataLoader
 import numpy as np
-from sindy import sindy_library_torch, e_sindy_library_torch
+from sindy_shred.sindy import sindy_library_torch, e_sindy_library_torch
 
 class SINDy(torch.nn.Module):
     def __init__(self, latent_dim, library_dim, poly_order, include_sine):
@@ -142,7 +142,7 @@ class SINDy_SHRED(torch.nn.Module):
     def sindys_add_noise(self, noise):
         self.e_sindy.add_noise(noise)
 
-def fit(model, train_dataset, valid_dataset, batch_size=64, num_epochs=4000, lr=1e-3, sindy_regularization=1.0, optimizer="AdamW", verbose=False, threshold=0.5, base_threshold=0.0, patience=20, thres_epoch=100, weight_decay=0.01):
+def fit_model(model, train_dataset, valid_dataset, batch_size=64, num_epochs=4000, lr=1e-3, sindy_regularization=1.0, optimizer="AdamW", verbose=False, threshold=0.5, base_threshold=0.0, patience=20, thres_epoch=100, weight_decay=0.01):
     train_loader = DataLoader(train_dataset, shuffle=False, batch_size=batch_size)
     criterion = torch.nn.MSELoss()
     if optimizer == "AdamW":

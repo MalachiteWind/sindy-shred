@@ -17,15 +17,14 @@ class TimeSeriesDataset(torch.utils.data.Dataset):
     def __len__(self):
         return self.len
 
-def load_data(name):
+def load_data(data_path:str):
     '''Takes string denoting data name and returns the corresponding (N x m) array 
     (N samples of m dimensional state)'''
-    if name == 'SST':
-        load_X = loadmat('Data/SST_data.mat')['Z'].T
-        print(load_X.shape)
-        mean_X = np.mean(load_X, axis=0)
-        sst_locs = np.where(mean_X != 0)[0]
-        return load_X[:, sst_locs]
+    load_X = loadmat(data_path)['Z'].T
+    print(load_X.shape)
+    mean_X = np.mean(load_X, axis=0)
+    sst_locs = np.where(mean_X != 0)[0]
+    return load_X[:, sst_locs]
         
 
 def qr_place(data_matrix, num_sensors):
