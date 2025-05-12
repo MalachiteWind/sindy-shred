@@ -2,6 +2,8 @@ import torch
 from torch.utils.data import DataLoader
 import numpy as np
 from sindy_shred.sindy import sindy_library_torch, e_sindy_library_torch
+from tqdm.auto import tqdm
+from typing import Optional
 
 class SINDy(torch.nn.Module):
     def __init__(self, latent_dim, library_dim, poly_order, include_sine):
@@ -142,51 +144,97 @@ class SINDy_SHRED(torch.nn.Module):
     def sindys_add_noise(self, noise):
         self.e_sindy.add_noise(noise)
 
-def fit_model(model, train_dataset, valid_dataset, batch_size=64, num_epochs=4000, lr=1e-3, sindy_regularization=1.0, optimizer="AdamW", verbose=False, threshold=0.5, base_threshold=0.0, patience=20, thres_epoch=100, weight_decay=0.01):
+def fit_model(
+        model, 
+        train_dataset, 
+        valid_dataset, 
+        batch_size=64, 
+        num_epochs=4000, 
+        lr=1e-3, 
+        sindy_regularization=1.0, 
+        optimizer="AdamW", 
+        verbose=False, 
+        threshold=0.5, 
+        base_threshold=0.0, 
+        weight_decay=0.01, 
+        print_every=200, 
+        precision=5,
+        patience: Optional[int]=20, 
+        no_tqdm: bool = False
+
+):
     train_loader = DataLoader(train_dataset, shuffle=False, batch_size=batch_size)
     criterion = torch.nn.MSELoss()
     if optimizer == "AdamW":
-        optimizer = torch.optim.AdamW([{"params": model.gru.parameters(), "lr": 0.01},
-                                       {"params": model.linear1.parameters()},
-                                       {"params": model.linear2.parameters()},
-                                       {"params": model.linear3.parameters()}], lr=lr, weight_decay=0.01)
-        optimizer_sindy = torch.optim.AdamW([{"params": model.e_sindy.parameters(), "lr": 0.01}], lr=lr, weight_decay=1)
-        optimizer_everything = torch.optim.AdamW([{"params": model.gru.parameters()},
-                                                  {"params": model.linear1.parameters()},
-                                                  {"params": model.linear2.parameters()},
-                                                  {"params": model.linear3.parameters()},
-                                                  {"params": model.e_sindy.parameters()}], lr=lr, weight_decay=0.01)
-    
+        optimizer = torch.optim.AdamW(
+            [{"params": model.gru.parameters(), "lr": 0.01},
+             {"params": model.linear1.parameters()},
+             {"params": model.linear2.parameters()},
+             {"params": model.linear3.parameters()}], lr=lr, weight_decay=0.01
+        )
+        # optimizer_sindy = torch.optim.AdamW([{"params": model.e_sindy.parameters(), "lr": 0.01}], lr=lr, weight_decay=1)
+        optimizer_everything = torch.optim.AdamW([
+            {"params": model.gru.parameters()},
+            {"params": model.linear1.parameters()},
+            {"params": model.linear2.parameters()},
+            {"params": model.linear3.parameters()},
+            {"params": model.e_sindy.parameters()}], lr=lr, weight_decay=0.01
+        )
+    loss_list = []
     val_error_list = []
     patience_counter = 0
-    best_params = model.state_dict()
-    for epoch in range(1, num_epochs + 1):
+    # best_params = model.state_dict()
+    if no_tqdm: 
+        progress_wrapper = lambda x: x
+    else:
+        progress_wrapper = tqdm
+
+    for epoch in progress_wrapper(range(1, num_epochs + 1)):
         for data in train_loader:
             model.train()
             outputs, h_gru, h_sindy = model(data[0], sindy=True)
             optimizer_everything.zero_grad()
-            loss = criterion(outputs, data[1]) + criterion(h_gru, h_sindy) * sindy_regularization + torch.abs(torch.mean(h_gru)) * 0.1
+
+            loss = (
+                criterion(outputs, data[1])
+                + criterion(h_gru, h_sindy) * sindy_regularization 
+                + torch.abs(torch.mean(h_gru)) * 0.1
+            )
+
             loss.backward()
             optimizer_everything.step()
-        print(epoch, ":", loss)
-        if epoch % thres_epoch == 0 and epoch != 0:
-            model.e_sindy.thresholding(threshold=threshold, base_threshold=base_threshold)
-            model.eval()
-            with torch.no_grad():
-                val_outputs = model(valid_dataset.X)
-                val_error = torch.linalg.norm(val_outputs - valid_dataset.Y)
-                val_error = val_error / torch.linalg.norm(valid_dataset.Y)
-                val_error_list.append(val_error)
-            if verbose:
-                print('Training epoch ' + str(epoch))
-                print('Error ' + str(val_error_list[-1]))
-            if val_error == torch.min(torch.tensor(val_error_list)):
-                patience_counter = 0
-            else:
-                patience_counter += 1
-            if patience_counter == patience:
-                return torch.tensor(val_error_list).cpu()
-    return torch.tensor(val_error_list).detach().cpu().numpy()
+        loss_list.append(loss)
+        model.e_sindy.thresholding(threshold=threshold, base_threshold=base_threshold)
+        model.eval()
+        with torch.no_grad():
+            val_outputs = model(valid_dataset.X)
+            val_error = torch.linalg.norm(val_outputs - valid_dataset.Y)
+            val_error = val_error / torch.linalg.norm(valid_dataset.Y)
+            val_error_list.append(val_error)
+        if verbose:
+            if epoch % print_every == 0 or epoch <= 5 or epoch == num_epochs:
+                print(
+                    f"Epoch {epoch}, loss = {loss:.{precision}f}, "
+                    f"error = {val_error:.{precision}f}"
+                )
+        if val_error <= torch.min(torch.tensor(val_error_list)):
+            patience_counter = 0
+
+        else:
+            patience_counter += 1
+        if patience and patience_counter == patience:
+            val_errors = torch.tensor(val_error_list).detach().cpu().numpy()
+            losses = torch.tensor(loss_list).detach().cpu().numpy()
+            print(
+                    f"Epoch {epoch}, loss = {loss:.{precision}f}, "
+                    f"error = {val_error:.{precision}f}"
+            )
+            print("Patience-Reached.")
+            return val_errors, losses
+    val_errors = torch.tensor(val_error_list).detach().cpu().numpy()
+    losses = torch.tensor(loss_list).detach().cpu().numpy()
+    print("Maximum-Iteration.")
+    return val_errors, losses
 
 def forecast(forecaster, reconstructor, test_dataset):
     initial_in = test_dataset.X[0:1].clone()
